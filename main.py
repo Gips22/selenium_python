@@ -1,14 +1,20 @@
+import os
+
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service  # чтобы не вылезала ошибка "Executable path has been deprecated please pass in a Service object"
 from fake_useragent import UserAgent
 from selenium.webdriver.common.by import By
-import pymysql
-from config import host, user, password, db_name
-import os  # модуль для создания папки под скриншоты лотов
+from loguru import logger
+
+import db
+from config import PATH_TO_CHROME_DRIVER, AVITO_URL_APPARTMENTS
+
+logger.add("debug.log", format="{time} {level} {message}", level="DEBUG", rotation="10 MB")
+
 
 # настройка браузера и драйвера
 useragent = UserAgent(verify_ssl=False)
-s = Service("/Users/andreynaletov/Desktop/PROJECTS/Projects/selenium_python/chromedriver/chromedriver")  # создаем переменную, чтобы не вылезала ошибка Executable path has been deprecated please pass in a Service object.
+s = Service(PATH_TO_CHROME_DRIVER)  # создаем переменную, чтобы не вылезала ошибка Executable path has been deprecated please pass in a Service object.
 options = webdriver.ChromeOptions()
 options.add_argument(f"user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.105 YaBrowser/21.3.3.230 Yowser/2.5 Safari/537.36")  # verify_ssl=False помогла настроить работу пакета fake-useragent и зафиксила ошибку
 options.add_argument('--disable-blink-features=AutomationControlled')  # отключаем режим детекции вебдрайвера, сайт проверки "https://intoli.com/blog/not-possible-to-block-chrome-headless/chrome-headless-test.html"
@@ -16,100 +22,98 @@ options.add_argument('--disable-blink-features=AutomationControlled')  # отк�
 driver = webdriver.Chrome(service=s,
                           options=options)  # здесь в service удаляем прямой путь к драйверу и указываем переменную s
 
-# Устанавливаем соединение с БД
-try:
-    connection = pymysql.connect(
-        host=host,
-        port=8889,
-        user=user,
-        password=password,
-        database=db_name,
-        cursorclass=pymysql.cursors.DictCursor
-    )
-    print("Successfully connected...")
-    print("#" * 20)
-    cursor = connection.cursor()
+db.check_db_exist()
+cursor = db.get_cursor()
 
-    # Создаем табличку в нашей БД для данных с парсинга
-    cursor.execute('CREATE TABLE avito_lots(id INT AUTO_INCREMENT,'
-                   ' lot_name VARCHAR(250),'
-                   ' price VARCHAR(250),'
-                   ' url VARCHAR(250),'
-                   ' screen LONGBLOB,'
-                   ' PRIMARY KEY(id));')
+def _create_folder_screens():
+    """Cоздаем папку для скриншотов лотов"""
+    try:
+        os.mkdir('./screenshots')
+    except Exception as ex:
+        logger.info("Папка уже создана")
 
-except Exception as ex:
-    print("Connection refused...")
-    print(ex)
+_create_folder_screens()
 
-try:
+def _find_ads_from_page(count):
+    """Cобираем список объявлений со страницы"""
+    url = AVITO_URL_APPARTMENTS + str(count)
+    driver.get(url)
+    driver.implicitly_wait(
+        30)  # этот метод используем вместо time.sleep(), так как он ждет максимум секунд которые в него передаем, но если получится выполнить быстрее, то сделает это
+    items = driver.find_elements(By.XPATH, "//div[@data-marker='item-photo']")
+    return items
+
+def _click_and_swith_to_window(this_item):
+    this_item.click()
+    driver.switch_to.window(driver.window_handles[1])  # перемещаемся на эту вкладку. Обязательно(!)
+    driver.implicitly_wait(30)
+
+def _find_lot_name():
+    """ Парсим название лота"""
+    lot_name = driver.find_element(By.XPATH, '//*[@id="app"]/div/div[2]/div[1]/div[3]/div[4]/div[1]/div[1]/div/div[1]/h1/span').text
+    driver.implicitly_wait(30)
+    return lot_name
+
+def _find_lot_price():
+    """ Парсим цену лота"""
+    price = driver.find_element(By.XPATH,
+                                '//*[@id="app"]/div/div[2]/div[1]/div[3]/div[4]/div[2]/div[1]/div[1]/div/div[1]/div/div[1]/div[1]/div/span/span').text
+    driver.implicitly_wait(30)
+    return price
+
+def _get_lot_url():
+    """Забираем URL лота"""
+    url = driver.current_url
+    return url
+
+def _make_and_save_screen(number_lot):
+    """Делаем скрин лота и сохраняем его"""
+    driver.execute_script(
+        "document.body.style.zoom='40%'")  # делаем меньше масштаб окна, чтобы все влезло на скрин
+    driver.get_screenshot_as_file(
+        f'screenshots/{number_lot}.png')  # сохраняем скрин по порядковому номеру в папку /screenshots
+    driver.implicitly_wait(15)
+
+def _inserts_received_data_into_db(number_lot):
+    """Вставляем полученные данные в табличку (1. Название лота | 2.Цена | 3. Ссылка на объявление | 4. Скриншот (вставим когда соберем все скриншоты)"""
+    with db.cursor as cursor:
+        file = open(
+            f'/Users/andreynaletov/Desktop/PROJECTS/Projects/selenium_python/chromedriver/avito_selenium/screenshots/{number_lot}.png',
+            'rb')
+        name = file.read()  # можно еще вот так pymysql.Binary(и сюда уже вводить file.read())
+        insert_data = (
+            "INSERT INTO `avito_lots` (lot_name, price, url, screen) VALUES (%s, %s, %s, %s)")
+        lot_name, price, url = _get_data_from_ad()
+        cursor.execute(insert_data, (lot_name, price, url, name))
+
+def _get_data_from_ad():
+    lot_name = _find_lot_name()
+    price = _find_lot_price()
+    url = _get_lot_url()
+    return tuple(lot_name, price, url)
+
+def _click_and_get_all_info(this_item, number_lot):
+    _click_and_swith_to_window(this_item)
+    lot_name, price, url = _get_data_from_ad()
+    _make_and_save_screen(number_lot)
+    logger.info(f"Название: {lot_name}, Цена: {price} рублей, URL: {url}")
+    driver.close()  # закрываем окно
+    driver.switch_to.window(driver.window_handles[0])  # переходим к главному окну
+    driver.implicitly_wait(20)
+
+def main_func(n=10):
+    """Основная функция. Переходим с общей страницы объявлений на конкретное, парсим и сохраняем инфу в БД, закрываем окно, переходим на следующее"""
     count = 1
-    os.mkdir('./screenshots')  # создаем папку для скриншотов лотов
-
-    while count < 10:
-        print(count)
-        url = "https://www.avito.ru/moskva/kvartiry/sdam/na_dlitelnyy_srok/3-komnatnye-ASgBAQICAkSSA8gQ8AeQUgFAzAgUklk?cd=1&f=ASgBAQECAkSSA8gQ8AeQUgFAzAgUklkBRcaaDBp7ImZyb20iOjUwMDAwLCJ0byI6MTAwMDAwfQ&footWalkingMetro=15&p=" + str(
-            count)
-        driver.get(url)
-        driver.implicitly_wait(
-            30)  # этот метод используем вместо time.sleep(), так как он ждет максимум секунд которые в него передаем, но если получится выполнить быстрее, то сделает это
-        items = driver.find_elements(By.XPATH,
-                                     "//div[@data-marker='item-photo']")  # собираем список объявлений со страницы
-        # переходим по объявлениям на странице (открытым вкладкам и парсим инфу)
+    while count < n:
+        logger.debug(count)
+        items = _find_ads_from_page(count)
         try:
-            number_lot = 1
             for i in range(len(items)):
-                items[i].click()
-                driver.switch_to.window(driver.window_handles[1])  # перемещаемся на эту вкладку. Обязательно(!)
-                driver.implicitly_wait(30)
-                try:
-                    # парсим название лота
-                    lot_name = driver.find_element(By.XPATH,
-                                                   '/html/body/div[3]/div[1]/div/div/div[2]/div[2]/div[1]/div[1]/div/div[1]/h1/span').text
-                    driver.implicitly_wait(30)
-
-                    # парсим цену
-                    price = driver.find_element(By.XPATH,
-                                                '/html/body/div[3]/div[1]/div/div/div[2]/div[2]/div[2]/div[1]/div/div[1]/div[1]/div/div[1]/div[1]/div/span/span/span[1]').text
-                    driver.implicitly_wait(30)
-
-                    # забираем URL лота
-                    url = driver.current_url
-
-                    # делаем скрин лота
-                    driver.execute_script(
-                        "document.body.style.zoom='40%'")  # делаем меньше масштаб окна, чтобы все влезло на скрин
-                    driver.get_screenshot_as_file(
-                        f'screenshots/{number_lot}.png')  # сохраняем скрин по порядковому номеру в папку /screenshots
-                    driver.implicitly_wait(15)
-
-                    print(f"Название: {lot_name}, Цена: {price} рублей, URL: {url}")
-
-                    driver.close()  # закрываем окно
-                    driver.switch_to.window(driver.window_handles[0])  # переходим к главному окну
-                    driver.implicitly_wait(20)
-
-
-                # Обработка исключений во время парсинга странички конкретного лота
-                except Exception as ex:
-                    print('Ошибка в объявлении', ex)
-                    driver.close()
-                    driver.switch_to.window(driver.window_handles[0])
-                    driver.implicitly_wait(30)
-
-                # Работа с БД: вставляем полученные данные в табличку (1. Название лота | 2.Цена | 3. Ссылка на объявление | 4. Скриншот (вставим когда соберем все скриншоты))
-                with connection.cursor() as cursor:
-                    file = open(
-                        f'/Users/andreynaletov/Desktop/PROJECTS/Projects/selenium_python/chromedriver/avito_selenium/screenshots/{number_lot}.png',
-                        'rb')
-                    name = file.read()  # можно еще вот так pymysql.Binary(и сюда уже вводить file.read())
-                    insert_data = (
-                                "INSERT INTO `avito_lots` (lot_name, price, url, screen) VALUES (%s, %s, %s, %s)")
-                    cursor.execute(insert_data, (lot_name, price, url, name))
-                    connection.commit()
+                this_item = items[i]
+                number_lot = 1
+                _click_and_get_all_info(this_item, number_lot)
+                _inserts_received_data_into_db(number_lot)
                 number_lot += 1
-
-
 
         except Exception as ex:
             print("Error while parsing...", ex)
@@ -117,14 +121,13 @@ try:
             driver.switch_to.window(driver.window_handles[0])
             driver.implicitly_wait(30)
 
-        count += 1
-    connection.close()
+        else:
+            count += 1
 
-except Exception as ex:
-    print(ex)
-finally:
-    driver.close()
-    driver.quit()
+main_func(10)
+
+driver.close()
+driver.quit()
 
 
 """
