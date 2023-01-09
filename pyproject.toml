@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "selenium-python"
+version = "0.1.0"
+description = ""
+authors = ["None"]
+readme = "README.md"
+packages = [{include = "selenium_python"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+selenium = "^4.7.2"
+fake-useragent = "^1.1.1"
+pymysql = "^1.0.2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
