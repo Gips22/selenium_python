@@ -6,7 +6,6 @@ from config import PASSWORD, DB_NAME
 
 logger.add("debug.log", format="{time} {level} {message}", level="DEBUG", rotation="10 MB")
 
-
 try:
     connection = psycopg2.connect(
         host="127.0.0.1",
@@ -22,14 +21,17 @@ except Exception as ex:
 connection.autocommit = True
 cursor = connection.cursor()
 
+
 def get_cursor():
     return cursor
+
 
 def _init_db():
     """Инициализируем БД"""
     with open("createdb.sql", "r") as f:
         sql = f.read()
         cursor.execute(sql)
+
 
 def check_db_exist():
     """Проверяет инициализирована ли БД, если нет - инициализирует"""
@@ -41,4 +43,6 @@ def check_db_exist():
     else:
         logger.debug("База уже создана")
 
-check_db_exist()
+
+if __name__ == "__main__":
+    check_db_exist()

@@ -1,7 +1,9 @@
-CREATE TABLE avito_lots(
-       id integer primary key,
-       lot_name VARCHAR(250),
-       price VARCHAR(250),
-       url VARCHAR(250),
-       screen bytea
+CREATE TABLE IF NOT EXISTS avito_lots
+(
+    id integer primary key NOT NULL GENERATED ALWAYS AS IDENTITY ( INCREMENT 1 START 1 MINVALUE 1 MAXVALUE 2147483647 CACHE 1 ),
+    lot_name VARCHAR(250),
+    price VARCHAR(250),
+    url VARCHAR(250),
+    screen bytea
 );
+
